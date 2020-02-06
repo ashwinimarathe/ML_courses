@@ -1,0 +1,312 @@
+---
+title: "Methods and Analysis 5"
+author: "Ashwini Marathe"
+date: "11/19/2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,warning=FALSE,message=FALSE,
+                      out.width="50%", out.height="50%", fig.align="center")
+library(ggplot2)
+library(cobalt)
+library(MatchIt)
+library(randomForest)
+library(knitr)
+```
+
+
+```{r data_processing}
+## data processing
+asthama <- read.table('Asthma.txt', header = TRUE)
+asthama$pg <- asthama$pg - 1
+#asthama$pg[asthama$pg==2] <- 0
+asthama$pg <- as.factor(asthama$pg)
+asthama$com_t <- asthama$com_t - mean(asthama$com_t)
+asthama$pcs_sd <- asthama$pcs_sd - mean(asthama$pcs_sd)
+asthama$mcs_sd <- asthama$mcs_sd - mean(asthama$mcs_sd)
+asthama$i_sex <- relevel(factor(asthama$i_sex), ref = 1)
+asthama$i_educ <- relevel(factor(asthama$i_educ), ref = 5)
+asthama$i_seve <- relevel(factor(asthama$i_seve), ref = 3)
+```
+
+## Question 1
+**Are the covariates in this data balanced between the two groups? If no, which covariates are not? How did you assess balance?**
+```{r}
+diff_asthama <- bal.tab(list(treat=factor(asthama$pg),covs=asthama[,2:11],estimand="ATT"))
+love.plot(list(treat=factor(asthama$pg),covs=asthama[,2:11],estimand="ATT"),stars = "std", colors = "blue", alpha=0.7,
+          position="")
+```
+
+Checked the balance between the covariates using absolute standardized difference (ASD). Absolute values of ASD above 0.1 are assumed to be imbalanced. The plot above shows the balance between variates and we can see that certain covariates are highly imbalanced (*pcs_sd*, *com_t*). Using a thresholding value of 0.1, 6 covariates were found to imbalanced. The list of the covariates and the corresponding ASD values are represented in the table below.
+
+```{r imbalance_table}
+imbalance_val <- diff_asthama$Balance$Diff.Un[abs(diff_asthama$Balance$Diff.Un)>0.1]
+imbalance <- data.frame("Variables"=c("i_sex","i_race","i_educ_5","i_educ_4","com_t","pcs_sd"),
+                        "ASD"=imbalance_val)
+kable(x=imbalance, digits = getOption("digits"))
+```
+
+
+## Question 2
+**Estimate the propensity score e using a logistic regression with all pre-treatment variables entering in the model as main effects.**
+
+From the graph below we can see that the two groups are probably not balanced. 
+```{r propensity_lr}
+model2 <- glm(pg ~ i_age+i_sex+i_race+i_educ+i_insu+i_drug+i_seve+com_t+pcs_sd+mcs_sd, data = asthama, family=binomial)
+pscore <- predict(model2, type="response")
+asthama$p_scores = pscore
+
+model_treat = glm(data = asthama, pg ~ i_age + i_sex + i_race + i_educ + i_insu + i_drug + i_seve  + com_t + pcs_sd + mcs_sd, family = binomial)
+
+#ggplot(asthama[asthama$pg==0,], aes(y=p_scores)) + geom_boxplot()
+ggplot(asthama, aes(y=p_scores, x=pg, fill=pg)) +
+  geom_boxplot() + xlab("pg") + ylab("Propensity score")
+```
+### Question 2a:
+**Are there any observations with an estimated propensity score e that is out of the range of e in the other group? If there are only a few such outliers (less than 5), keep them; If many, discard them and report the number of the discarded observations. This is to ensure overlap!**
+
+From the density plot below we see that the plots do not overlap much. Checking the overlap between the points we observe that a total of points (4 on right and 21 on left) do not overlap. Since this is a significant number we discard these non-overlapping observations. 
+
+```{r density_plot}
+ggplot(asthama, aes(x=p_scores, fill=pg)) +
+  geom_density(alpha=.3) +
+  xlim(0, 1) + xlab("Propensity Scores")
+```
+```{r checking_overlap}
+outliers_left <- sum(asthama$p_scores < max(min(asthama$p_scores[asthama$pg==0]),min(asthama$p_scores[asthama$pg==1])))
+outliers_right <- sum(asthama$p_scores > min(max(asthama$p_scores[asthama$pg==0]),max(asthama$p_scores[asthama$pg==1])))
+
+
+Index <- !(asthama$p_scores < max(min(asthama$p_scores[asthama$pg==0]),min(asthama$p_scores[asthama$pg==1])) | asthama$p_scores > min(max(asthama$p_scores[asthama$pg==0]),max(asthama$p_scores[asthama$pg==1])))
+
+asthama_overlap <- asthama[Index,]
+```
+
+
+### Question 2b:
+**Using one-to-one, nearest neighbor matching on the estimated propensity scores, check balance again. Are the covariates balanced now? If no, which ones are not?**
+
+Matched the data using nearest neighbor 1:1 matching using the propensity scores obtained from logistic regression. After the matching 6 variables remain unbalanced. The plot below shows the ASD values for the covariates after matching.
+```{r}
+match_lr <- matchit(pg~ i_age+i_sex+i_race+i_educ+i_insu+i_drug+i_seve+com_t+pcs_sd+mcs_sd, 
+                    method = "nearest", distance = "logit", data = asthama_overlap, replace=TRUE, ratio=1)
+#summary(match_lr)
+asthama_matched_data <- match.data(match_lr)
+diff_2 <- bal.tab(list(treat=factor(asthama_matched_data$pg),covs=asthama_matched_data[,2:11],estimand="ATT"))
+
+love.plot(list(treat=factor(asthama_matched_data$pg),covs=asthama_matched_data[,2:11],estimand="ATT"),stars = "std", colors = "blue", alpha=0.7,position="")
+```
+
+
+### Question 2c:
+**Estimate the average causal effect Q using the matched sample obtained above. Also, report a standard error for your estimate. Construct a 95% confidence interval and interpret your findings.**
+```{r Q_calculation}
+trteffct <- mean(asthama_matched_data$i_aqoc[asthama_matched_data$pg==1]) - 
+  mean(asthama_matched_data$i_aqoc[asthama_matched_data$pg==0])
+
+ntrue1 <- sum(asthama_matched_data$pg==1)
+nfalse1 <- sum(asthama_matched_data$pg==0)
+#se <- sqrt(var(asthama_matched_data$i_aqoc[asthama_matched_data$pg==1])/ntrue1 + 
+#            var(asthama_matched_data$i_aqoc[asthama_matched_data$pg==0])/nfalse1)
+
+p1 <- mean(asthama_matched_data$i_aqoc[asthama_matched_data$pg==1])
+p2 <- mean(asthama_matched_data$i_aqoc[asthama_matched_data$pg==0])
+
+se <- sqrt((p1*(1-p1)/ntrue1) + (p2*(1-p2)/nfalse1))
+
+#print(trteffct-1.96*se)
+#print(trteffct+1.96*se)
+```
+
+Using the matched sample the average causal effect Q is `r trteffct`. The standard error for the estimate is `r se` and the confidence interval for average causal effect is [`r trteffct-1.96*se`, `r trteffct+1.96*se`].
+
+Interpretation: 
+Since the confidence interval of the average causal effect Q does not include 0, we can say that `r -trteffct*100`%   people served by the patient group 1 are less satisfied with the treatment as compared to patient group 0.
+
+
+### Question 2d:
+**Fit a logistic regression to the response variable using the main effects of all pre-treatment variables. Also include the propensity score e as a predictor. Report the estimated causal odds ratio. If it is significant, interpret the effect in context of the problem. Note that this estimated effect is not an estimate of Q = p1 - p2 but intuitively, it still makes sense to look at it.**
+
+```{r lr}
+modeld <- glm(i_aqoc ~ i_age+i_sex+i_race+i_educ+i_insu+i_drug+i_seve+com_t+pcs_sd+mcs_sd+p_scores+pg, data=asthama_matched_data,
+              family=binomial)
+#summary(modeld)
+```
+The variable *pg* is significant in the logistic regression model and the causal odds ratio is 0.31 and the confidence interavl for it is [0.12, 0.701]. Since this value is less than 1 and the confidence interval does not include 1, we can draw conclusion similar to Question 1c, that people served by the patient group 1 are satisfied less with the treatment as compared to patient group 0.
+
+### Question 2e:
+**Repeat parts (b) to (d) using one-to-many (five) nearest neighbor matching with replacement, instead of one-to-one nearest neighbor matching. How do your results compare to what you had before?**
+
+```{r one_to_many}
+match_lr_one_to_many <- matchit(pg ~ i_age+i_sex+i_race+i_educ+i_insu+i_drug+i_seve+com_t+pcs_sd+mcs_sd, 
+                    method = "nearest", distance = "logit", data = asthama_overlap, ratio=5, replace=TRUE)
+#summary(match_lr_one_to_many)
+asthama_matched_data_1_many <- match.data(match_lr_one_to_many)
+diff_3 <- bal.tab(list(treat=factor(asthama_matched_data_1_many$pg),covs=asthama_matched_data_1_many[,2:11],estimand="ATT"))
+```
+5 covariates are imbalanced in this case. However the imbalance is less than 1:1 matching. Below is the plot of ASD values:
+
+```{r}
+
+love.plot(list(treat=factor(asthama_matched_data_1_many$pg),covs=asthama_matched_data_1_many[,2:11],estimand="ATT"),stars = "std", colors = "blue", alpha=0.7,position="")
+```
+
+```{r Q_calculation_one_many}
+trteffct_1_many <- mean(asthama_matched_data_1_many$i_aqoc[asthama_matched_data_1_many$pg==1]) - 
+  mean(asthama_matched_data_1_many$i_aqoc[asthama_matched_data_1_many$pg==0])
+
+ntrue1 <- sum(asthama_matched_data_1_many$pg==1)
+nfalse1 <- sum(asthama_matched_data_1_many$pg==0)
+#se <- sqrt(var(asthama_matched_data$i_aqoc[asthama_matched_data$pg==1])/ntrue1 + 
+#            var(asthama_matched_data$i_aqoc[asthama_matched_data$pg==0])/nfalse1)
+
+p1_1_many <- mean(asthama_matched_data_1_many$i_aqoc[asthama_matched_data_1_many$pg==1])
+p2_1_many <- mean(asthama_matched_data_1_many$i_aqoc[asthama_matched_data_1_many$pg==0])
+
+se_1_many <- sqrt((p1_1_many*(1-p1_1_many)/ntrue1) + (p2_1_many*(1-p2_1_many)/nfalse1))
+
+#print(trteffct_1_many-1.96*se_1_many)
+#print(trteffct_1_many+1.96*se_1_many)
+```
+Using the matched sample from one to many matching, the average causal effect Q is `r trteffct_1_many`. The standard error for the estimate is `r se_1_many` and the confidence interval for average causal effect is [`r trteffct_1_many-1.96*se_1_many`, `r trteffct_1_many+1.96*se_1_many`].
+
+Interpretation: 
+Since the confidence interval of the average causal effect Q does not include 0, we can make meaningful interpretaions form the value of treatment effect obtained like in the 1:1 matching. People in group 1 are `r -trteffct_1_many*100` less satisfied than people in group 0.
+
+```{r }
+modeld1_many <- glm(i_aqoc ~ i_age+i_sex+i_race+i_educ+i_insu+i_drug+i_seve+com_t+pcs_sd+mcs_sd+p_scores+pg, data=asthama_matched_data_1_many,
+              family=binomial)
+#summary(modeld)
+```
+
+The variable *pg* is significant in the logistic regression model and the causal odds ratio is 0.42 and the confidence interavl for it is [0.207, 0.856]. Since this value is less than 1 and the confidence interval does not include 1, we can draw conclusion similar to Question 1c, that people served by the patient group 1 are satisfied less with the treatment as compared to patient group 0.
+
+## Question 3
+
+### Question 3a
+**Are there any observations with an estimated propensity score e that is out of the range of e in the other group? If there are only a few such outliers (less than 5), keep them; If many, discard them and report the number of the discarded observations. This is to ensure overlap!**
+
+
+```{r}
+model_randomForest <- randomForest(pg ~ i_age+i_sex+i_race+i_educ+i_insu+i_drug+i_seve+com_t+pcs_sd+mcs_sd,
+                                   data = asthama, ntree = 500, importance = TRUE)
+asthama$p_scores_rf <- predict(model_randomForest, type="prob")[,2]
+par(mfrow=c(1,2))
+ggplot(asthama, aes(x=p_scores_rf, fill=pg)) +
+  geom_density(alpha=.3) +
+  xlim(0, 1)+xlab("Propensity Scores")
+
+#ggplot(asthama, aes(x=pg, y=p_scores_rf, fill=pg)) + geom_boxplot()
+```
+
+```{r}
+outliers_left_rf <- sum(asthama$p_scores_rf < max(min(asthama$p_scores_rf[asthama$pg==0]),min(asthama$p_scores_rf[asthama$pg==1])))
+outliers_right_rf <- sum(asthama$p_scores_rf > min(max(asthama$p_scores_rf[asthama$pg==0]),max(asthama$p_scores_rf[asthama$pg==1])))
+
+
+Index_rf <- !(asthama$p_scores_rf < max(min(asthama$p_scores_rf[asthama$pg==0]),min(asthama$p_scores_rf[asthama$pg==1])) | asthama$p_scores_rf > min(max(asthama$p_scores_rf[asthama$pg==0]),max(asthama$p_scores_rf[asthama$pg==1])))
+
+asthama_overlap_rf <- asthama[Index_rf,]
+```
+From the density plot above we see that the plots overlap better than in logistic regression Checking the overlap between the points we observe that a total of 17 points (3 on right and 14 on left) do not overlap. Since this is a significant number we discard these non-overlapping observations.
+
+### Question 3b:
+**Using one-to-one, nearest neighbor matching on the estimated propensity scores, check balance again. Are the covariates balanced now? If no, which ones are not?**
+
+Matched the data using nearest neighbor 1:1 matching using the propensity scores obtained from random forest. After the matching 3 variables are not matched. But the overall match looks better than logistic regression.
+```{r}
+match_rf <- matchit(pg~ i_age+i_sex+i_race+i_educ+i_insu+i_drug+i_seve+com_t+pcs_sd+mcs_sd, 
+                    method = "nearest", distance = asthama_overlap_rf$p_scores_rf, data = asthama_overlap_rf, replace=TRUE)
+#summary(match_rf)
+asthama_matched_data_rf <- match.data(match_rf)
+diff4 <- bal.tab(list(treat=factor(asthama_matched_data_rf$pg),covs=asthama_matched_data_rf[,2:11],estimand="ATT"))
+
+love.plot(list(treat=factor(asthama_matched_data_rf$pg),covs=asthama_matched_data_rf[,2:11],estimand="ATT"),stars = "std", colors = "blue", alpha=0.7,position="")
+```
+
+### Question 3c:
+**Estimate the average causal effect Q using the matched sample obtained above. Also, report a standard error for your estimate (use the formula for computing standard error for difference in proportions; if you are not familiar with this, check page 280 of the OIS book we used for the online summer review). Construct a 95% confidence interval and interpret your findings.**
+
+```{r }
+trteffct_rf <- mean(asthama_matched_data_rf$i_aqoc[asthama_matched_data_rf$pg==1]) - 
+  mean(asthama_matched_data_rf$i_aqoc[asthama_matched_data_rf$pg==0])
+
+ntrue1 <- sum(asthama_matched_data_rf$pg==1)
+nfalse1 <- sum(asthama_matched_data_rf$pg==0)
+#se <- sqrt(var(asthama_matched_data$i_aqoc[asthama_matched_data$pg==1])/ntrue1 + 
+#            var(asthama_matched_data$i_aqoc[asthama_matched_data$pg==0])/nfalse1)
+
+p1 <- mean(asthama_matched_data_rf$i_aqoc[asthama_matched_data_rf$pg==1])
+p2 <- mean(asthama_matched_data_rf$i_aqoc[asthama_matched_data_rf$pg==0])
+
+se_rf <- sqrt((p1*(1-p1)/ntrue1) + (p2*(1-p2)/nfalse1))
+
+#print(trteffct_rf-1.96*se_rf)
+#print(trteffct_rf+1.96*se_rf)
+```
+Using the matched sample the average causal effect Q is `r trteffct_rf`. The standard error for the estimate is `r se_rf` and the confidence interval for average causal effect is [`r trteffct_rf-1.96*se_rf`, `r trteffct_rf+1.96*se_rf`].
+
+Interpretation: 
+Since the confidence interval of the average causal effect Q does not include 0, we can say that people served by the patient group 1 are `r -trteffct*100`% less satisfied with the treatment as compared to patient group 0.
+
+### Question 3d:
+**Fit a logistic regression to the response variable using the main effects of all pre-treatment variables. Also include the propensity score e as a predictor. Report the estimated causal odds ratio. If it is significant, interpret the effect in context of the problem. Note that this estimated effect is not an estimate of Q = p1 - p2 but intuitively, it still makes sense to look at it.**
+
+```{r }
+model_rf <- glm(i_aqoc ~ i_age+i_sex+i_race+i_educ+i_insu+i_drug+i_seve+com_t+pcs_sd+mcs_sd+p_scores+pg, data=asthama_matched_data_rf,
+              family=binomial)
+#summary(model_rf)
+```
+The variable *pg* is significant in the logistic regression model and the causal odds ratio is 0.35 and the confidence interavl for it is [0.15, 0.81]. Since this value is greater than 0 and the confidence interval does not include 0, we can draw conclusion similar to Question 3c, that people served by the patient group 0 are satisfied more with the treatment as compared to patient group 1.
+
+### Question 3e:
+A  lot of covariates are balanced in this case. Below is the table of the imbalanced covariates:
+```{r }
+match_lr_one_to_many_rf <- matchit(pg ~ i_age+i_sex+i_race+i_educ+i_insu+i_drug+i_seve+com_t+pcs_sd+mcs_sd, 
+                    method = "nearest", distance = asthama_overlap_rf$p_scores_rf, data = asthama_overlap_rf, ratio=5, replace=TRUE)
+#summary(match_lr_one_to_many)
+asthama_matched_data_1_many_rf <- match.data(match_lr_one_to_many_rf)
+diff_5 <- bal.tab(list(treat=factor(asthama_matched_data_1_many_rf$pg),covs=asthama_matched_data_1_many_rf[,2:11],estimand="ATT"))
+
+love.plot(list(treat=factor(asthama_matched_data_1_many_rf$pg),covs=asthama_matched_data_1_many_rf[,2:11],estimand="ATT"),stars = "std", colors = "blue", alpha=0.7,position="")
+```
+
+
+
+```{r }
+asthama_matched_data_1_many_rf <- match.data(match_lr_one_to_many_rf)
+trteffct_1_many_rf <- mean(asthama_matched_data_1_many_rf$i_aqoc[asthama_matched_data_1_many_rf$pg==1]) - 
+  mean(asthama_matched_data_1_many_rf$i_aqoc[asthama_matched_data_1_many_rf$pg==0])
+
+ntrue1 <- sum(asthama_matched_data_1_many_rf$pg==1)
+nfalse1 <- sum(asthama_matched_data_1_many_rf$pg==0)
+#se <- sqrt(var(asthama_matched_data$i_aqoc[asthama_matched_data$pg==1])/ntrue1 + 
+#            var(asthama_matched_data$i_aqoc[asthama_matched_data$pg==0])/nfalse1)
+
+p1_1_many_rf <- mean(asthama_matched_data_1_many_rf$i_aqoc[asthama_matched_data_1_many_rf$pg==1])
+p2_1_many_rf <- mean(asthama_matched_data_1_many_rf$i_aqoc[asthama_matched_data_1_many_rf$pg==0])
+
+se_1_many_rf <- sqrt((p1_1_many_rf*(1-p1_1_many_rf)/ntrue1) + (p2_1_many_rf*(1-p2_1_many_rf)/nfalse1))
+
+#print(trteffct_1_many_rf-1.96*se_1_many_rf)
+#print(trteffct_1_many_rf+1.96*se_1_many_rf)
+```
+Using the matched sample from one to many matching, the average causal effect Q is `r trteffct_1_many_rf`. The standard error for the estimate is `r se_1_many_rf` and the confidence interval for average causal effect is [`r trteffct_1_many_rf-1.96*se_1_many_rf`, `r trteffct_1_many_rf+1.96*se_1_many_rf`].
+
+Interpretation: 
+Since the confidence interval of the average causal effect Q does not include 0, we can comment on the treatment effect. People in group 1 are `r -trteffct_1_many_rf*100`% less satisfied than people in group 0.
+
+```{r }
+modeld1_many_rf <- glm(i_aqoc ~ i_age+i_sex+i_race+i_educ+i_insu+i_drug+i_seve+com_t+pcs_sd+mcs_sd+p_scores+pg, data=asthama_matched_data_1_many_rf,
+              family=binomial)
+#summary(modeld1_many_rf)
+```
+
+The variable *pg* is significant in the logistic regression model and the causal odds ratio is 0.42 and the confidence interavl for it is [0.207, 0.8521]. Since this value is less than 1 and the confidence interval does not include 1, we can draw conclusion similar to Question 3c, that people served by the patient group 1 are less satisfied with the treatment as compared to patient group 0. However, in 1:many matching the confidence intervals are narrower than the 1:1 matching.
+
+## Question 4
+
+**Which of the methods do you consider most reliable (or feel most comfortable with) for estimating the causal effect? Why?**
+
+The 1:n matching using propensity score from random forest balanced the data very well. More the balance more can we rely on the treatment effect values that we get. Also the propensity score density plot for both the groups is more balanced than that in logistic regression. The confidence intervals for treatment efect are narrower in 1:n matching using propensity score from random forest.

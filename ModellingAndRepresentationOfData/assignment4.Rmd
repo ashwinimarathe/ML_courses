@@ -1,0 +1,207 @@
+---
+title: "Methods and Data Analysis 4"
+author: "Ashwini Marathe"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(sjPlot)
+library(mice)
+library(VIM)
+library(gridExtra)
+library(ggplot2)
+library(kableExtra)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Following are the R commands used to create a dataset with 30% of the age values missing completely at random.
+```{r, include=FALSE}
+treeage <- read.table("treeage.txt", header = TRUE, comment.char = "", stringsAsFactors = FALSE, sep=",")
+set.seed(7)
+```
+```{r}
+R <- sample(treeage$age,6)
+treeage_na <- treeage
+treeage_na$age <- ifelse(treeage$age %in% R, NA, treeage$age)
+```
+```{r, include=FALSE}
+par(mar=c(2,2,1,1))
+plot(treeage_na$diameter, treeage_na$age)
+```
+The dataset with missing values is as follows.
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+kable(treeage_na) %>% kable_styling(position = 'center')
+```
+Next we use MICE to impute the missing values in the dataset and create 50 imputed datasets.
+```{r, echo=FALSE}
+treeage_imp <- mice(treeage_na,m=50,defaultMethod=
+                      c("norm","logreg","polyreg","polr"),print=F)
+d1 <- complete(treeage_imp, 1)
+```
+
+### Imputation evaluation
+
+```{r echo=FALSE, out.width='50%', fig.align="center"}
+stripplot(treeage_imp, col=c("grey","darkred"),pch=c(1,20))[3]
+
+```
+```{r echo=FALSE, out.width='50%', fig.align="center"}
+xyplot(treeage_imp, age ~ diameter | .imp,pch=c(1,20),cex = 1.4,col=c("blue","darkred"))[c(1,2,6,9,15,18,32,44)]
+```
+The figure above shows a few of the imputed datasets. The imputations seem to be fine. Like the original data the imputed data too seems to have an upward trend. 
+
+### Analysis of two imputed datasets
+Let us have  a look at the density plots for two imputed datasets. We choose imputed dataset 5 and 25 for the analysis. 
+```{r echo=FALSE, out.height='50%'}
+a<-densityplot(treeage_imp, subset=.imp==1, col='black', main='Original')
+b<-densityplot(treeage_imp, subset=.imp==5, col='red', main='Imputation 5')
+c<-densityplot(treeage_imp, subset=.imp==25, col='blue', main='Imputation 25')
+print(a, position = c(0, 0, 0.33, 1), more = TRUE)
+print(b, position = c(0.33, 0, 0.66, 1), more = TRUE)
+print(c, position = c(0.66, 0, 1, 1))
+```
+The density plot of the original data is bi-modal. Likeiwse the density plot for imputed data too has bimodal distribution and is similar to the original data for $5^{th}$ imputation but is slightly different fot the $3_{rd}$ imputation.
+
+```{r echo=FALSE, out.width='50%', fig.align="center"}
+xyplot(treeage_imp, age ~ diameter | .imp,pch=c(1,20),cex = 1.4,col=c("blue","darkred"))[c(1,5,25)]
+```
+The scatter plot of *age* vs. *diameter* for original and imputation 5 and 25 is as shown. The imputed red values have a similar trend as original data.
+
+
+### Regression model
+Let us now fit a regression model for age based on diameter.
+```{r,echo=FALSE}
+model_imp <- with(data=treeage_imp, lm(age~diameter))
+coef <- summary(model_imp$analyses[[5]])
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+kable(coef$coefficients) %>% kable_styling(position = 'center')
+```
+The table shows the coefficients and the statistics for imputed dataset 5. 
+```{r, echo=FALSE, out.width = '50%', fig.align='center'}
+d5 <- complete(treeage_imp, 5)
+plot(fitted(model_imp$analyses[[5]], d5),residuals(model_imp$analyses[[5]]), ,xlab= 'Fitted values', ylab='Residuals');abline(0,0, col='red')
+
+```
+
+The residual plot looks fine indicating that there exists linear relationship between age and diameter.
+Next we create a model by pooling from all the 50 imputed datasets. The table below gives the coefficients for pooled model
+
+```{r, echo=FALSE}
+model_imp_pool <- pool(model_imp)
+pooled_model <- summary(model_imp_pool)
+```
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+kable(pooled_model) %>% kable_styling(position = 'center')
+```
+Thus from the model we can see that for an increase in diameter by 1 unit the age increases by 11.85 units. Also diameter is a significant co variate as the p-value for diameter is low (0.007). The $R^2$ value of the model is 0.59 and is not very high as we have only 20 data points, 6 of which were imputed. A larger data size might give better results in explaining the relationship between age and diameter.
+
+## Question 2
+
+### Data loading
+```{r, echo=FALSE}
+nhanes <- read.csv('nhanes.csv', na.strings = '.')
+nhanes <- nhanes[,-c(1,2,3,5)]
+nhanes$riagendr = as.factor(nhanes$riagendr)
+nhanes$ridreth2 = as.factor(nhanes$ridreth2)
+nhanes$dmdeduc  = as.factor(nhanes$dmdeduc)
+nhanes$indfminc  = as.factor(nhanes$indfminc)
+```
+The data has 10122 rows and some of the columns have missing values. The table above gives the number of missing values in each column. Out of the 11 columns, 9 columns have missing values, with *bmxthicr* column having as high as 2928 missing values. 
+
+### Data imputation using MICE
+
+We use multiple imputations to deal with the missing data using 10 imputation data sets. Shown below are density plots for all the covariates which had missing values. Blue curve represents the density plot for original data and the red lines represent the 10 imputed data sets. 
+```{r load nhanes_imp, echo=FALSE}
+#nhanes_imp <- mice(nhanes,m=10,defaultMethod=c("pmm","logreg","polyreg","polr"),print=F)
+load(file="nhanes_imp.RData")
+colnames(nhanes)[colSums(is.na(nhanes)) > 0]
+densityplot(nhanes_imp)
+```
+The density plot for *age* and *bmxarml* are very similar to the original data, whereas for *bmxthicr* the density plot is significantly different from the original data. This might be due to the fact that *bmxthicr* had almost 30% missing values. For the covariates *bmxbmi* and *bmxwais* too the density plot are not very similar.
+
+Let us look at the scatter plot for different imputations.
+```{r echo=FALSE,fig.align="center",out.width='50%'}
+xyplot(nhanes_imp, bmxbmi ~ age | .imp,pch=c(1,20),cex = 1.4,col=c("blue","red"))
+xyplot(nhanes_imp, bmxbmi ~ riagendr | .imp,pch=c(1,20),cex = 1.4,col=c("blue","red"))
+```
+### Two imputed data sets
+
+Let us look at two imputed datasets (3 and 7) and compare the scatter plot for bmxbmi (BMI measurement) by age and bmxbmi by riagendr (gender)
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+d3 <- complete(nhanes_imp, 3)
+d7 <- complete(nhanes_imp, 7)
+```
+
+```{r echo=FALSE,out.width='50%',fig.align="center"}
+
+xyplot(nhanes_imp, bmxbmi ~ age | .imp,pch=c(1,20),cex = 1.4,col=c("blue","red"))[c(3,7)]
+xyplot(nhanes_imp, bmxbmi ~ dmdeduc | .imp,pch=c(1,20),cex = 1.4,col=c("blue","red"))[c(3,7)]
+```
+From the scatter plot of *bmxbmi* and *age*, the imputed values (red) seems to follow trend similar to original data (blue). However, there exists a few outliers in both the $3^{rd}$ and $7^{th}$ imputed dataset. 
+
+### Regression model
+
+We start building the model by looking at the $3^{rd}$ imputed dataset.
+
+```{r, echo=FALSE, out.width='50%',fig.align="center"}
+d3 <- complete(nhanes_imp, 3)
+ggplot(d3, aes(x=bmxbmi)) + geom_histogram(fill='blue')
+```
+From the histogram of the outcome variable *bmxbmi* we can see that the distribution is skewed towards left. We can try correcting it using the logarithmic transformation.  The histogram below shows represents *log(bmxbmi)*
+
+```{r, echo=FALSE, out.width='50%',fig.align="center"}
+d3 <- complete(nhanes_imp, 3)
+ggplot(d3, aes(x=log(bmxbmi))) + geom_histogram(fill='blue')
+```
+This distribution is closer to normal distribution and hence we will go ahead with the log transformation.
+```{r include=FALSE, echo=FALSE, out.width='50%'}
+# EDA plots
+ggplot(aes(x=age, y = log(bmxbmi)), data= d3) +
+  geom_point(aes(colour=ridreth2)) +
+  geom_smooth(se=FALSE,method = 'lm') 
+
+ggplot(aes(x=age, y = log(bmxbmi)), data= d3) +
+  geom_point(aes(colour=as.factor(dmdeduc))) 
+```
+Based on the EDA plots above we build a model as given below,
+formula: log(bmxbmi) ~ age + riagendr + indfminc + ridreth2 + dmdeduc + indfminc + age:ridreth2 + age:dmdeduc
+```{r, echo=FALSE}
+model <- lm(log(bmxbmi) ~ age + riagendr + ridreth2 + dmdeduc + age:ridreth2 + age:dmdeduc , data = d3)
+
+```
+We run a stepwise function using BIC to get the optimum model as follows,
+formula: log(bmxbmi) ~ age + riagendr + ridreth2 + dmdeduc + indfminc + age:ridreth2 +
+
+The variable *indfminc* does not turn out to be to be significant and hence is not retained by the stepwise function. Below are the diagnostic plot for the final model.
+
+```{r, echo=FALSE, out.width='50%'}
+plot(model)
+#plot(residuals(model), fitted(d3), xlab='Fitted values', ylab='Residuals'); #abline(0,0, col='red')
+```
+
+The following conclusions can be made from the final model,
+
+- Age is the best predictor for *bmxbmi* due to its highest t-value. An increase in age by 1 year increases the bmi 0.6%.
+
+- education levels 7 and 9 are not significant. This might be due to very few data points belonging to these groups. Having a education level 3 as compared to education level 1 increases the *bmxbmi* by 28%.
+
+- for a female the bmi is more than males by 2%
+
+- the baseline bmi (intercept) is 2.9 (on log scale) but does not make sense to interpret the intercept since the age variable is not mean-centered in this model.
+
+The covariates represent 37% of variance in the data. There are some problems with the model which might have led to the small R-squared value. The outcome variable *bmxbmi* is not normal. Also we are using imputed data which is not equivalent to using true data. 
+
+
+### Pooling the results
+```{r echo=FALSE}
+model_imp = with(data=nhanes_imp, lm(log(bmxbmi)~age + riagendr + ridreth2 + dmdeduc + age:ridreth2 + age:dmdeduc))
+model_pool = pool(model_imp) 
+r_sq <- pool.r.squared(model_imp)
+```
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+kable(round(summary(model_pool),4)) %>% kable_styling(position = 'center')
+```
+The pooled coefficients are as shown in the table. The R-squared value for the pooled model is  37% indicating that the model explains 37% of variance in *bmxbmi* which is similar to the value obtained for model trained on $3^{rd}$ imputed dataset.
